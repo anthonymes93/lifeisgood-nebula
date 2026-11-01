@@ -38,4 +38,4 @@ jobs:
           put index.html -o index.html
           bye
           EOF
-          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -f /tmp/deploy.lftp
+          lftp -f /tmp/deploy.lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER"
