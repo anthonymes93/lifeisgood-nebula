@@ -66,7 +66,7 @@ jobs:
           dirs = sorted({str(pathlib.PurePosixPath(p).parent) for p in paths if '/' in p})
           lines = ['set cmd:fail-exit true', 'set ftp:ssl-force true', 'set ftp:ssl-protect-data true', 'set ssl:verify-certificate true', 'set net:max-retries 3', 'set net:timeout 30']
           for d in dirs:
-              lines.append('mkdir -p ' + quote(d))
+              lines.append('mkdir -f ' + quote(d))
           for p in paths:
               if not pathlib.Path(p).is_file():
                   continue
