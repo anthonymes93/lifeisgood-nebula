@@ -1,4 +1,4 @@
-name: Deploy to Namecheap Nebula (FTPS)
+name: Deploy Evropa static site to Nebula (FTPS)
 
 on:
   workflow_dispatch:
@@ -13,15 +13,26 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 120
     steps:
-      - name: Check out website
+      - name: Check out Evropa website
         uses: actions/checkout@v4
+        with:
+          repository: anthonymes93/evropa-simplystatic
+          ref: main
+          path: website
+          persist-credentials: false
+
+      - name: Check website size and required files
+        run: |
+          test -f website/index.html
+          echo "File count: $(find website -type f | wc -l)"
+          du -sh website
 
       - name: Install FTPS client
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Upload index.html without deleting remote files
+      - name: Upload entire static website via explicit FTPS
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -29,4 +40,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$FTP_SERVER" && test -n "$FTP_USERNAME" && test -n "$FTP_PASSWORD"
-          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate true; set net:max-retries 2; set net:timeout 20; put index.html -o index.html; bye"
+          # FTPS is mandatory; do not weaken certificate checks or delete remote files.
+          # The restricted FTP user's login directory is the website's public_html.
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -e '
+            set cmd:fail-exit true
+            set ftp:ssl-force true
+            set ftp:ssl-protect-data true
+            set ssl:verify-certificate true
+            set net:max-retries 3
+            set net:timeout 30
+            set net:reconnect-interval-base 5
+            mirror --reverse --verbose=1 --parallel=4 --only-newer --no-perms --exclude-glob .git/ --exclude-glob .github/ website/ ./
+            bye
+          '
