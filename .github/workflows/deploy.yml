@@ -1,0 +1,41 @@
+name: Deploy to Namecheap Nebula (FTPS)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nebula-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out website
+        uses: actions/checkout@v4
+
+      - name: Install FTPS client
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: Upload index.html without deleting remote files
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$FTP_SERVER" && test -n "$FTP_USERNAME" && test -n "$FTP_PASSWORD"
+          cat > /tmp/deploy.lftp <<'EOF'
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ssl:verify-certificate true
+          set net:max-retries 2
+          set net:timeout 20
+          put index.html -o index.html
+          bye
+          EOF
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -f /tmp/deploy.lftp
