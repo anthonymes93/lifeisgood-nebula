@@ -1,4 +1,4 @@
-name: Deploy Evropa static site to Nebula (FTPS)
+name: Deploy changed Evropa files to Nebula (FTPS)
 
 on:
   workflow_dispatch:
@@ -13,26 +13,21 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
-      - name: Check out Evropa website
+      - name: Check out Evropa source with Git history
         uses: actions/checkout@v4
         with:
           repository: anthonymes93/evropa-simplystatic
           ref: main
+          fetch-depth: 0
           path: website
           persist-credentials: false
-
-      - name: Check website size and required files
-        run: |
-          test -f website/index.html
-          echo "File count: $(find website -type f | wc -l)"
-          du -sh website
 
       - name: Install FTPS client
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Upload entire static website via explicit FTPS
+      - name: Download previous deployed revision
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -40,8 +35,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$FTP_SERVER" && test -n "$FTP_USERNAME" && test -n "$FTP_PASSWORD"
-          # FTPS is mandatory; do not weaken certificate checks or delete remote files.
-          # The restricted FTP user's login directory is the website's public_html.
           lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -e '
             set cmd:fail-exit true
             set ftp:ssl-force true
@@ -49,7 +42,48 @@ jobs:
             set ssl:verify-certificate true
             set net:max-retries 3
             set net:timeout 30
-            set net:reconnect-interval-base 5
-            mirror --reverse --verbose=1 --parallel=4 --only-newer --no-perms --exclude-glob .git/ --exclude-glob .github/ website/ ./
+            get .evropa-deploy-sha -o /tmp/evropa-deploy-sha
             bye
-          '
+          ' || echo "No remote deployment marker yet; using verified initial full-upload revision."
+
+      - name: Prepare changed-file upload
+        run: |
+          set -euo pipefail
+          cd website
+          BASELINE=fd65d6d108444eb756c63111a985941fb34a2454
+          if test -s /tmp/evropa-deploy-sha; then
+            BASELINE="$(tr -d '\r\n' < /tmp/evropa-deploy-sha)"
+          fi
+          git cat-file -e "$BASELINE^{commit}"
+          git merge-base --is-ancestor "$BASELINE" HEAD
+          printf 'Baseline: %s\nTarget: %s\n' "$BASELINE" "$(git rev-parse HEAD)"
+          git diff --name-only --diff-filter=ACMRT -z "$BASELINE" HEAD > /tmp/changed-files
+          python3 - <<'PY'
+          import pathlib, subprocess
+          paths = [p.decode() for p in pathlib.Path('/tmp/changed-files').read_bytes().split(b'\0') if p]
+          def quote(value):
+              return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+          dirs = sorted({str(pathlib.PurePosixPath(p).parent) for p in paths if '/' in p})
+          lines = ['set cmd:fail-exit true', 'set ftp:ssl-force true', 'set ftp:ssl-protect-data true', 'set ssl:verify-certificate true', 'set net:max-retries 3', 'set net:timeout 30']
+          for d in dirs:
+              lines.append('mkdir -p ' + quote(d))
+          for p in paths:
+              if not pathlib.Path(p).is_file():
+                  continue
+              lines.append('put ' + quote(p) + ' -o ' + quote(p))
+          lines += ['put /tmp/evropa-new-sha -o .evropa-deploy-sha', 'bye']
+          pathlib.Path('/tmp/evropa-upload.lftp').write_text('\n'.join(lines) + '\n')
+          pathlib.Path('/tmp/evropa-new-sha').write_text(subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()+'\n')
+          print(f'Files to upload: {len(paths)}')
+          for p in paths[:30]: print('  ' + p)
+          PY
+
+      - name: Upload only changed files and save deployed revision
+        working-directory: website
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" -p 21 "ftp://$FTP_SERVER" -f /tmp/evropa-upload.lftp
